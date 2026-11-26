@@ -156,6 +156,7 @@ new MutationObserver(()=>{for(const c of document.querySelectorAll('.stack td:no
   <header class="top">
     <h2 id="title">ภาพรวม<small id="subtitle"></small></h2>
     <div class="seg" id="weekSeg" aria-label="งวด"></div>
+    <input class="search" id="plateQ" type="search" placeholder="ค้นหาทะเบียน (ทุกงวด)" aria-label="ค้นหาทะเบียน" style="flex:0 1 200px;min-height:34px">
     <button class="btn" id="bqx">ส่งให้ บี-ควิก <span id="bqn"></span></button>
     <button class="btn" id="bqpdf">PDF ที่เลือก</button>
     <button class="btn gold" id="xls">ส่งออก Excel</button>
@@ -544,39 +545,49 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const BC = window.BillCheck, fmt = BC.fmt;
 const ST = { pass: ['ผ่าน', 'c-pass'], 'pass-note': ['ผ่าน มีหมายเหตุ', 'c-note'], check: ['ต้องตรวจ', 'c-check'], fail: ['ไม่ผ่าน', 'c-fail'], noapproval: ['ไม่มีใบอนุมัติ', 'c-noap'], pending: ['รอใบอนุมัติ', 'c-pend'], void: ['ยกเลิก/ลดหนี้', 'c-void'], verify: ['รอยืนยันจากภาพ', 'c-verify'], reviewed: ['ผ่าน (ตรวจแล้ว)', 'c-pass'] };
 const SEV = { error: 'ผิด', warn: 'ตรวจ', info: 'ข้อมูล' };
-const PAGES = [['overview', 'ภาพรวม', '◧'], ['bills', 'บิลทั้งหมด', '☰'], ['issues', 'จุดผิดปกติ', '⚠'], ['unused', 'ยังไม่วางบิล', '⏳'], ['quotes', 'ใบอนุมัติ', '▤']];
+const PAGES = [['overview', 'ภาพรวม', '◧'], ['bills', 'บิลทั้งหมด', '☰'], ['issues', 'จุดผิดปกติ', '⚠'], ['unused', 'ยังไม่วางบิล', '⏳'], ['quotes', 'ใบอนุมัติ', '▤'], ['share', 'สรุป / แชร์', '⇪']];
 const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 // one check across all weeks: an approval can cover a bill billed in another week
 const ALLB = window.WEEKS.flatMap((w) => w.bills.map((b) => ({ ...b, date: BC.parseDate(b.date), week: w.id })));
 const PENDING = window.WEEKS.filter((w) => !w.hasZip).flatMap((w) => w.bills.map((b) => b.receiptNo));
 const G = BC.run({ meta: { customerNo: window.WEEKS.at(-1).meta.customerNo, customerName: window.WEEKS.at(-1).meta.customerName }, bills: ALLB }, window.QUOTES, { pending: PENDING });
+function mkSummary(results, quotes, unused) {
+  const live = results.filter((r) => r.status !== 'void'), cnt = (st) => live.filter((r) => st.includes(r.status)).length;
+  return { bills: live.length, billTotal: BC.r2(results.reduce((a, r) => a + r.total, 0)), pass: cnt(['pass', 'pass-note']), check: cnt(['check']), fail: cnt(['fail']), noapproval: cnt(['noapproval']),
+    pending: cnt(['pending']), verify: cnt(['verify']), void: results.length - live.length, atRisk: BC.r2(live.filter((r) => r.status === 'fail' || r.status === 'noapproval').reduce((a, r) => a + r.total, 0)),
+    quotes: quotes.length, unused: unused.length };
+}
 const W = window.WEEKS.map((w) => {
   const meta = { ...w.meta, from: BC.parseDate(w.meta.from), to: BC.parseDate(w.meta.to) };
-  const results = G.results.filter((r) => r.week === w.id);
-  const live = results.filter((r) => r.status !== 'void'), cnt = (st) => live.filter((r) => st.includes(r.status)).length;
-  const summary = { bills: live.length, billTotal: BC.r2(results.reduce((a, r) => a + r.total, 0)), pass: cnt(['pass', 'pass-note']), check: cnt(['check']), fail: cnt(['fail']), noapproval: cnt(['noapproval']),
-    pending: cnt(['pending']), verify: cnt(['verify']), void: results.length - live.length, atRisk: BC.r2(live.filter((r) => r.status === 'fail' || r.status === 'noapproval').reduce((a, r) => a + r.total, 0)),
-    quotes: window.QUOTES.filter((q) => q.zip === w.id).length, unused: G.unused.filter((q) => q.zip === w.id).length };
-  return { ...w, quotes: window.QUOTES.filter((q) => q.zip === w.id), out: { meta, results, summary, unused: G.unused.filter((q) => q.zip === w.id) } };
+  const results = G.results.filter((r) => r.week === w.id), quotes = window.QUOTES.filter((q) => q.zip === w.id), unused = G.unused.filter((q) => q.zip === w.id);
+  return { ...w, quotes, out: { meta, results, summary: mkSummary(results, quotes, unused), unused } };
 });
-const notesFor = (w) => (w.id === wk().id ? NOTES : ls.get('nx.notes.' + w.id)) || {};
+// "all periods" view: same results, every week together
+const ALLW = (() => { const m = W.at(-1).out.meta, results = W.flatMap((w) => w.out.results), unused = W.flatMap((w) => w.out.unused), quotes = W.flatMap((w) => w.quotes);
+  return { id: 'all', label: 'ทุกงวด', all: true, hasZip: W.some((w) => w.hasZip), quotes, out: { meta: { ...m, from: W[0].out.meta.from, to: m.to }, results, summary: mkSummary(results, quotes, unused), unused } }; })();
+const WEEK = new Map(W.map((w) => [w.id, w]));
+// notes live per week (nx.notes.<weekId>) so old notes keep working; a bill/quote key finds its own week
+const KEYWEEK = new Map(); W.forEach((w) => { w.out.results.forEach((r) => KEYWEEK.set(r.receiptNo, w.id)); w.quotes.forEach((q) => KEYWEEK.set('q_' + q.id, w.id)); });
+const NB = {};
+const notesW = (id) => NB[id] || (NB[id] = ls.get('nx.notes.' + id) || {});
+const weekOfKey = (k) => KEYWEEK.get(k) || (wk().all ? W.at(-1).id : wk().id);
+const noteOf = (k) => notesW(weekOfKey(k))[k] || {};
+function saveNote(k, patch) { const id = weekOfKey(k), n = notesW(id); n[k] = { ...(n[k] || {}), ...patch, at: new Date().toISOString() }; ls.set('nx.notes.' + id, n); }
+const billNote = (r) => noteOf(r.receiptNo);
 // a bill the user ticked as reviewed counts as passed (the original verdict stays visible in its detail)
 function V(w) {
-  const n = notesFor(w);
-  const results = w.out.results.map((r) => (r.status !== 'void' && !String(r.status).startsWith('pass') && n[r.receiptNo]?.reviewed ? { ...r, origStatus: r.status, status: 'reviewed' } : r));
+  const results = w.out.results.map((r) => (r.status !== 'void' && !String(r.status).startsWith('pass') && billNote(r).reviewed ? { ...r, origStatus: r.status, status: 'reviewed' } : r));
   const live = results.filter((r) => r.status !== 'void'), cnt = (st) => live.filter((r) => st.includes(r.status)).length;
   const summary = { ...w.out.summary, pass: cnt(['pass', 'pass-note', 'reviewed']), reviewed: cnt(['reviewed']), check: cnt(['check']), fail: cnt(['fail']), noapproval: cnt(['noapproval']), verify: cnt(['verify']),
     atRisk: BC.r2(live.filter((r) => r.status === 'fail' || r.status === 'noapproval').reduce((a, r) => a + r.total, 0)) };
   return { ...w.out, results, summary };
 }
 const shownNo = (r) => r.noReceipt ? '— ไม่มีเลขที่ในรายงาน' : r.receiptNo;
-const S = { wi: W.length - 1, page: 'overview', status: 'all', q: '', showInfo: true, unrev: false, open: new Set() };
-const wk = () => W[S.wi], prev = () => W[S.wi - 1];
-const notesKey = () => 'nx.notes.' + wk().id;
-let NOTES = ls.get(notesKey()) || {};
-const noteOf = (k) => NOTES[k] || {};
-function saveNote(k, patch) { NOTES[k] = { ...noteOf(k), ...patch, at: new Date().toISOString() }; ls.set(notesKey(), NOTES); }
+const S = { wi: -1, page: 'overview', status: 'all', q: '', showInfo: true, unrev: false, open: new Set() };
+const wk = () => (S.wi < 0 ? ALLW : W[S.wi]), prev = () => (S.wi > 0 ? W[S.wi - 1] : null);
+const wkOf = (r) => WEEK.get(r.week) || wk();
+const periodTxt = (w) => `${BC.dstr(w.out.meta.from)} – ${BC.dstr(w.out.meta.to)}`;
 function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2400); }
 
 /* cover */
@@ -586,18 +597,19 @@ $('#enter').onclick = () => { $('#cover').remove(); };
 /* chrome */
 function renderChrome() {
   const o = V(wk()), s = o.summary;
-  const counts = { overview: '', bills: s.bills, issues: o.results.flatMap((r) => r.issues).filter((i) => i.sev !== 'info').length, unused: s.unused, quotes: s.quotes };
+  const counts = { overview: '', share: '', bills: s.bills, issues: o.results.flatMap((r) => r.issues).filter((i) => i.sev !== 'info').length, unused: s.unused, quotes: s.quotes };
   $('#navList').innerHTML = PAGES.map(([k, t, ic]) => `<button class="nav" data-page="${k}" ${S.page === k ? 'aria-current="page"' : ''}><span>${ic}</span>${t}${counts[k] !== '' ? `<span class="ct">${counts[k]}</span>` : ''}</button>`).join('');
   $('#tabbar').innerHTML = PAGES.map(([k, t, ic]) => `<button data-page="${k}" ${S.page === k ? 'aria-current="page"' : ''}>${ic}<br>${t}</button>`).join('');
-  $('#weekSeg').innerHTML = W.map((w, i) => `<button data-week="${i}" aria-pressed="${i === S.wi}">${esc(w.label)}</button>`).join('');
+  $('#weekSeg').innerHTML = `<button data-week="-1" aria-pressed="${S.wi < 0}">ทุกงวด</button>` + W.map((w, i) => `<button data-week="${i}" aria-pressed="${i === S.wi}">${esc(w.label)}</button>`).join('');
   const t = PAGES.find((p) => p[0] === S.page)[1];
-  $('#title').innerHTML = `${esc(t)}<small>${esc(o.meta.customerName)} ${esc(o.meta.customerNo)} · งวด ${esc(wk().label)}</small>`;
+  $('#title').innerHTML = `${esc(t)}<small>${esc(o.meta.customerName)} ${esc(o.meta.customerNo)} · ${wk().all ? `ทุกงวด ${esc(periodTxt(wk()))}` : 'งวด ' + esc(wk().label)}</small>`;
   $('#footNote').textContent = `${W.length} งวด · มีใบอนุมัติ ${W.filter((w) => w.hasZip).length} งวด · หมายเหตุบันทึกในเครื่องนี้`;
 }
 document.addEventListener('click', (e) => {
   const p = e.target.closest('[data-page]'); if (p) { S.page = p.dataset.page; S.status = 'all'; render(); scrollTo(0, 0); return; }
-  const w = e.target.closest('[data-week]'); if (w) { S.wi = +w.dataset.week; NOTES = ls.get(notesKey()) || {}; S.open.clear(); render(); }
+  const w = e.target.closest('[data-week]'); if (w) { S.wi = +w.dataset.week; S.open.clear(); render(); }
 });
+let pqT; $('#plateQ').addEventListener('input', (e) => { clearTimeout(pqT); pqT = setTimeout(() => { const v = e.target.value.trim(); S.q = v; if (v) { S.wi = -1; S.page = 'bills'; S.status = 'all'; S.unrev = false; } render(); }, 250); });
 const themeLbl = () => { $('#theme').textContent = document.documentElement.dataset.theme === 'dark' ? 'โหมดสว่าง' : 'โหมดมืด'; }; themeLbl();
 $('#theme').onclick = () => { const d = document.documentElement.dataset.theme === 'dark' ? '' : 'dark'; document.documentElement.dataset.theme = d; try { localStorage.setItem('nx.theme', d); } catch {} themeLbl(); };
 
@@ -607,6 +619,25 @@ function delta(cur, pv, money, lowerIsBetter = true) {
   const d = BC.r2(cur - pv); if (!d) return '<span class="d na">เท่างวดก่อน</span>';
   const worse = lowerIsBetter ? d > 0 : d < 0;
   return `<span class="d ${worse ? 'up' : 'dn'}">${d > 0 ? '▲' : '▼'} ${money ? fmt(Math.abs(d)) : Math.abs(d)} จากงวดก่อน</span>`;
+}
+function weekRows() { return W.map((w, i) => ({ w, i, s: V(w).summary })); }
+function weekTable() {
+  const rows = weekRows(), T = (f) => rows.reduce((a, x) => a + x.s[f], 0);
+  return `<div class="card"><h3>แยกรายงวด</h3><p class="sub">กดที่งวดเพื่อเปิดดูเฉพาะงวดนั้น · ผ่าน รวมบิลที่ทำเครื่องหมายตรวจแล้ว</p><div class="tbl" style="max-height:none"><table class="stack"><thead><tr><th>งวด</th><th class="n">บิล</th><th class="n">ยอดวางบิล</th><th class="n">ผ่าน</th><th class="n">ต้องตรวจ</th><th class="n">ไม่ผ่าน</th><th class="n">ไม่มีใบอนุมัติ</th><th class="n">ยอดเสี่ยง</th><th class="n">อัตราผ่าน</th></tr></thead><tbody>
+  ${rows.map(({ w, i, s }) => `<tr class="bill" data-week="${i}" ${i === S.wi ? 'style="font-weight:600"' : ''}><td>${esc(w.label)}</td><td class="n">${s.bills}</td><td class="n">${fmt(s.billTotal)}</td><td class="n">${s.pass}</td><td class="n">${s.check}</td><td class="n">${s.fail}</td><td class="n">${s.noapproval}</td><td class="n ${s.atRisk ? 'diff' : ''}">${fmt(s.atRisk)}</td><td class="n">${s.bills ? Math.round((s.pass / s.bills) * 100) : 0}%</td></tr>`).join('')}
+  <tr style="font-weight:600;border-top:2px solid var(--rule)"><td>รวมทุกงวด</td><td class="n">${T('bills')}</td><td class="n">${fmt(T('billTotal'))}</td><td class="n">${T('pass')}</td><td class="n">${T('check')}</td><td class="n">${T('fail')}</td><td class="n">${T('noapproval')}</td><td class="n">${fmt(T('atRisk'))}</td><td class="n">${T('bills') ? Math.round((T('pass') / T('bills')) * 100) : 0}%</td></tr></tbody></table></div></div>`;
+}
+function branchAgg(o) {
+  const m = new Map();
+  o.results.filter((r) => r.status !== 'void').forEach((r) => { const k = r.branch || '—'; const a = m.get(k) || { branch: k, bills: 0, total: 0, pass: 0, check: 0, fail: 0, noapproval: 0, atRisk: 0 };
+    a.bills++; a.total += r.total; if (['pass', 'pass-note', 'reviewed'].includes(r.status)) a.pass++; if (r.status === 'check') a.check++; if (r.status === 'fail') a.fail++; if (r.status === 'noapproval') a.noapproval++;
+    if (r.status === 'fail' || r.status === 'noapproval') a.atRisk += r.total; m.set(k, a); });
+  return [...m.values()].map((a) => ({ ...a, total: BC.r2(a.total), atRisk: BC.r2(a.atRisk), rate: a.bills ? a.pass / a.bills : 0 })).sort((a, b) => b.atRisk - a.atRisk || (b.fail + b.noapproval + b.check) - (a.fail + a.noapproval + a.check) || b.total - a.total);
+}
+function branchTable(o) {
+  const rows = branchAgg(o);
+  return `<div class="card"><h3>แยกตามสาขา บี-ควิก</h3><p class="sub">${rows.length} สาขา · เรียงจากยอดเสี่ยงและจำนวนบิลมีปัญหา · กดเพื่อดูบิลของสาขานั้น</p><div class="tbl"><table class="stack"><thead><tr><th>สาขา</th><th class="n">บิล</th><th class="n">ยอดวางบิล</th><th class="n">ผ่าน</th><th class="n">ต้องตรวจ</th><th class="n">ไม่ผ่าน</th><th class="n">ไม่มีใบอนุมัติ</th><th class="n">ยอดเสี่ยง</th><th class="n">อัตราผ่าน</th></tr></thead><tbody>
+  ${rows.map((a) => `<tr class="bill" data-branch="${esc(a.branch)}"><td>${esc(a.branch)}</td><td class="n">${a.bills}</td><td class="n">${fmt(a.total)}</td><td class="n">${a.pass}</td><td class="n">${a.check}</td><td class="n">${a.fail}</td><td class="n">${a.noapproval}</td><td class="n ${a.atRisk ? 'diff' : ''}">${fmt(a.atRisk)}</td><td class="n">${Math.round(a.rate * 100)}%</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function overview() {
   const o = V(wk()), s = o.summary, pw = prev(), ps = pw && pw.hasZip && wk().hasZip ? V(pw).summary : null, pt = pw ? V(pw).summary : null;
@@ -633,26 +664,28 @@ function overview() {
   const maxT = Math.max(...W.map((w) => w.out.summary.billTotal));
   const trendRows = []; W.forEach((w, i) => { if (i) { const gap = (w.out.meta.from - W[i - 1].out.meta.to) / 864e5; if (gap > 1.5) { const a = new Date(+W[i - 1].out.meta.to + 864e5), b = new Date(+w.out.meta.from - 864e5); trendRows.push(`<div class="row"><span>${BC.dstr(a).slice(0, 5)}–${BC.dstr(b).slice(0, 5)}</span><span class="sub" style="margin:0">ไม่มีรายงานงวดนี้</span><span></span></div>`); } }
     const r = V(w).results; const part = (sts) => r.filter((x) => sts.includes(x.status)).reduce((a, x) => a + x.total, 0);
-    trendRows.push(`<div class="row" data-week="${i}" style="cursor:pointer"><span>${esc(w.label)}</span><div class="track" style="width:${(w.out.summary.billTotal / maxT) * 100}%"><div class="c-pass" style="flex:${part(['pass', 'pass-note', 'reviewed'])}"></div><div class="c-check" style="flex:${part(['check'])}"></div><div class="c-fail" style="flex:${part(['fail', 'noapproval'])}"></div><div class="c-pend" style="flex:${part(['pending'])}"></div></div><span class="n">${fmt(w.out.summary.billTotal)}</span></div>`); });
+    trendRows.push(`<div class="row" data-week="${i}" style="cursor:pointer${i === S.wi ? ';font-weight:600' : ''}"><span>${esc(w.label)}</span><div class="track" style="width:${(w.out.summary.billTotal / maxT) * 100}%"><div class="c-pass" style="flex:${part(['pass', 'pass-note', 'reviewed'])}"></div><div class="c-check" style="flex:${part(['check'])}"></div><div class="c-fail" style="flex:${part(['fail', 'noapproval'])}"></div><div class="c-pend" style="flex:${part(['pending'])}"></div></div><span class="n">${fmt(w.out.summary.billTotal)}</span></div>`); });
   return `${!wk().hasZip ? `<div class="banner">งวดนี้ยังไม่ได้รับไฟล์ใบอนุมัติ จึงยังเทียบบิลกับใบอนุมัติไม่ได้ — แสดงยอดวางบิล การตรวจข้อมูลข้ามงวด และบิลที่จับคู่ได้กับใบอนุมัติของงวดอื่น (${s.bills - s.pending} บิล)</div>` : ''}
-  <div class="pills"><span class="pill-h">งวดที่เลือก <b>${esc(wk().label)}</b></span><span class="pill-h">เทียบกับ <b>${esc(prev()?.label || 'ไม่มีงวดก่อนหน้า')}</b>${ps ? '' : (prev() ? ' (เทียบได้เฉพาะยอดวางบิล)' : '')}</span><span class="pill-h">ใบอนุมัติ <b>${s.quotes}</b> ใบ · ยังไม่วางบิล <b>${s.unused}</b> ใบ</span></div>
+  <div class="pills"><span class="pill-h">งวดที่เลือก <b>${esc(wk().label)}</b>${wk().all ? ` (${W.length} งวด ${esc(periodTxt(wk()))})` : ''}</span>${wk().all ? '<span class="pill-h">เลือกงวดด้านบนเพื่อดูแยกงวด และเทียบกับงวดก่อน</span>' : `<span class="pill-h">เทียบกับ <b>${esc(prev()?.label || 'ไม่มีงวดก่อนหน้า')}</b>${ps ? '' : (prev() ? ' (เทียบได้เฉพาะยอดวางบิล)' : '')}</span>`}<span class="pill-h">ใบอนุมัติ <b>${s.quotes}</b> ใบ · ยังไม่วางบิล <b>${s.unused}</b> ใบ</span></div>
   <div class="kpis">${k.map(([l, v, sub, d, b]) => `<div class="kpi"><div class="l">${esc(l)}</div><div class="v">${esc(v)}</div><div class="s">${esc(sub)}</div><div class="s">${d}</div><div class="bar ${b}"></div></div>`).join('')}</div>
   <div class="card"><h3>สัดส่วนยอดวางบิลตามผลตรวจ</h3><p class="sub">ความกว้างตามยอดเงิน · จุดผิดปกติ ${nIss(o)} จุด</p>
     <div class="vbar">${segs.map((x) => `<div class="${ST[x.st][1]}" style="width:${(x.amt / s.billTotal) * 100}%" title="${esc(ST[x.st][0])}">${x.amt / s.billTotal > 0.08 ? fmt(x.amt) : ''}</div>`).join('')}</div>
     <div class="legend">${segs.map((x) => `<span><i class="${ST[x.st][1]}"></i>${esc(ST[x.st][0])} ${x.n} บิล · ${fmt(x.amt)}</span>`).join('')}</div></div>
   <div class="grid2">
    <div class="card"><h3>บิลที่ต้องจัดการ</h3><p class="sub">เรียงจากรุนแรงที่สุด กดเพื่อดูรายละเอียด</p>
-    ${bad.length ? `<div class="tbl" style="max-height:none"><table class="stack"><thead><tr><th>สถานะ</th><th>ทะเบียน</th><th>เลขที่ใบเสร็จ</th><th class="n">ยอดบิล</th><th>จุดหลัก</th></tr></thead><tbody>${bad.map((r) => { const i = r.issues.find((x) => x.sev === 'error') || r.issues.find((x) => x.sev === 'warn');
-      return `<tr class="bill" data-goto="${esc(r.receiptNo)}"><td><span class="pill p-${r.status}">${esc(ST[r.status][0])}</span></td><td>${esc(r.plate)}</td><td class="mono">${esc(shownNo(r))}</td><td class="n">${fmt(r.total)}</td><td>${esc(i ? i.type : '')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">ทุกบิลผ่าน</div>'}</div>
+    ${bad.length ? `<div class="tbl" style="max-height:none"><table class="stack"><thead><tr><th>สถานะ</th>${wk().all ? '<th>งวด</th>' : ''}<th>ทะเบียน</th><th>เลขที่ใบเสร็จ</th><th class="n">ยอดบิล</th><th>จุดหลัก</th></tr></thead><tbody>${bad.map((r) => { const i = r.issues.find((x) => x.sev === 'error') || r.issues.find((x) => x.sev === 'warn');
+      return `<tr class="bill" data-goto="${esc(r.receiptNo)}"><td><span class="pill p-${r.status}">${esc(ST[r.status][0])}</span></td>${wk().all ? `<td style="white-space:nowrap">${esc(wkOf(r).label)}</td>` : ''}<td>${esc(r.plate)}</td><td class="mono">${esc(shownNo(r))}</td><td class="n">${fmt(r.total)}</td><td>${esc(i ? i.type : '')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">ทุกบิลผ่าน</div>'}</div>
    <div class="card"><h3>แนวโน้มรายงวด</h3><p class="sub">ยอดวางบิลสุทธิแต่ละงวด แยกตามผลตรวจ · กดเพื่อเปิดงวดนั้น</p>
     <div class="trend">${trendRows.join('')}</div>
     <div class="legend"><span><i class="c-pass"></i>ผ่าน</span><span><i class="c-check"></i>ต้องตรวจ</span><span><i class="c-fail"></i>ไม่ผ่าน/ไม่มีใบอนุมัติ</span><span><i class="c-pend"></i>รอใบอนุมัติ</span></div></div>
-  </div>`;
+  </div>
+  ${weekTable()}${branchTable(o)}`;
 }
 
 /* lists */
 const statusOk = (r) => S.status === 'all' || (S.status === 'pass' && r.status === 'reviewed') || (S.status === 'verify' && r.status === 'verify') || (S.status === 'pending' && (r.status === 'pending' || r.status === 'void')) || (S.status === 'bad' && (r.status === 'fail' || r.status === 'noapproval')) || (S.status === 'check' && r.status === 'check') || (S.status === 'pass' && r.status.startsWith('pass'));
-const match = (...v) => !S.q || v.join(' ').toLowerCase().includes(S.q.toLowerCase().trim());
+const norm = (v) => String(v ?? '').toLowerCase().replace(/[\s\-–]/g, '');
+const match = (...v) => !S.q || norm(v.join('|')).includes(norm(S.q));
 function filters(withStatus) {
   const st = [['all', 'ทั้งหมด'], ['bad', 'ไม่ผ่าน + ไม่มีใบอนุมัติ'], ['check', 'ต้องตรวจ'], ['pass', 'ผ่าน']].concat(wk().out.summary.verify ? [['verify', 'รอยืนยันจากภาพ']] : []).concat(wk().out.summary.pending || wk().out.summary.void ? [['pending', 'รอใบอนุมัติ / ยกเลิก']] : []);
   const act = [S.status !== 'all' && ['status', st.find((x) => x[0] === S.status)[1]], S.q && ['q', `ค้นหา: ${S.q}`], S.unrev && ['unrev', 'ยังไม่ได้ตรวจ']].filter(Boolean);
@@ -663,15 +696,18 @@ function filters(withStatus) {
 }
 function bills() {
   const rows = V(wk()).results.filter((r) => statusOk(r) && (!S.unrev || !noteOf(r.receiptNo).reviewed) && match(r.receiptNo, r.plate, r.branch, r.quoteNos, r.issues.map((i) => i.msg + i.line).join(' ')));
-  return filters(true) + (rows.length ? `<div class="tbl"><table class="stack"><thead><tr><th>สถานะ</th><th>เลขที่ใบเสร็จ</th><th>วันที่</th><th>ทะเบียน</th><th>สาขา</th><th class="n">ยอดบิล</th><th>ใบเสนอราคา</th><th class="n">ยอดอนุมัติ</th><th class="n">ส่วนต่าง</th><th>จุด</th><th>ส่ง บี-ควิก</th><th>ตรวจแล้ว</th><th>หมายเหตุ</th></tr></thead><tbody>${rows.map(billRow).join('')}</tbody></table></div>` : '<div class="empty">ไม่มีบิลตามตัวกรองนี้</div>');
+  const plates = [...new Set(rows.map((r) => r.plate))], A = wk().all;
+  const veh = S.q && plates.length === 1 && rows.length ? (() => { const st = (f) => rows.filter(f).length, live = rows.filter((r) => r.status !== 'void');
+    return `<div class="card"><h3>ทะเบียน ${esc(plates[0])}</h3><p class="sub">${A ? 'ทุกงวด' : 'งวด ' + esc(wk().label)} · ${live.length} บิล · ยอดรวม ${fmt(live.reduce((a, r) => a + r.total, 0))} บาท · ผ่าน ${st((r) => ['pass', 'pass-note', 'reviewed'].includes(r.status))} · ต้องตรวจ ${st((r) => r.status === 'check')} · ไม่ผ่าน ${st((r) => r.status === 'fail')} · ไม่มีใบอนุมัติ ${st((r) => r.status === 'noapproval')}${A ? '' : ' · <a href="#" data-allq="1">ดูทุกงวด</a>'}</p></div>`; })() : '';
+  return filters(true) + veh + (rows.length ? `<div class="tbl"><table class="stack"><thead><tr><th>สถานะ</th>${A ? '<th>งวด</th>' : ''}<th>เลขที่ใบเสร็จ</th><th>วันที่</th><th>ทะเบียน</th><th>สาขา</th><th class="n">ยอดบิล</th><th>ใบเสนอราคา</th><th class="n">ยอดอนุมัติ</th><th class="n">ส่วนต่าง</th><th>จุด</th><th>ส่ง บี-ควิก</th><th>ตรวจแล้ว</th><th>หมายเหตุ</th></tr></thead><tbody>${rows.map(billRow).join('')}</tbody></table></div>` : '<div class="empty">ไม่มีบิลตามตัวกรองนี้</div>');
 }
 function billRow(r) {
   const n = noteOf(r.receiptNo), d = BC.r2(r.total - r.quoteTotal), iss = r.issues.filter((i) => S.showInfo || i.sev !== 'info'), open = S.open.has(r.receiptNo);
   const cnt = ['error', 'warn', 'info'].map((s) => { const k = iss.filter((i) => i.sev === s).length; return k ? `<span class="sev s-${s}">${SEV[s]} ${k}</span>` : ''; }).join(' ');
-  return `<tr class="bill${open ? ' open' : ''}" data-open="${esc(r.receiptNo)}"><td><span class="pill p-${r.status}">${esc(ST[r.status][0])}</span></td><td class="mono">${esc(shownNo(r))}</td><td>${esc(r.dateStr)}</td><td>${esc(r.plate)}</td><td>${esc(r.branch)}</td><td class="n">${fmt(r.total)}</td>
+  return `<tr class="bill${open ? ' open' : ''}" data-open="${esc(r.receiptNo)}"><td><span class="pill p-${r.status}">${esc(ST[r.status][0])}</span></td>${wk().all ? `<td style="white-space:nowrap">${esc(wkOf(r).label)}</td>` : ''}<td class="mono">${esc(shownNo(r))}</td><td>${esc(r.dateStr)}</td><td>${esc(r.plate)}</td><td>${esc(r.branch)}</td><td class="n">${fmt(r.total)}</td>
   <td class="mono">${esc(r.quoteNos || '—')}</td><td class="n">${r.quotes.length ? fmt(r.quoteTotal) : '—'}</td><td class="n ${d && r.quotes.length ? 'diff' : ''}">${r.quotes.length ? fmt(d) : '—'}</td><td>${cnt}</td>
   <td><input type="checkbox" data-bq="${esc(r.receiptNo)}" ${bqOn(wk(), r) ? 'checked' : ''} aria-label="ส่งให้ บี-ควิก ตรวจสอบ"></td><td><input type="checkbox" data-rev="${esc(r.receiptNo)}" ${n.reviewed ? 'checked' : ''} aria-label="ตรวจแล้ว"></td><td><textarea class="notebox" rows="1" data-note="${esc(r.receiptNo)}" placeholder="เพิ่มหมายเหตุ">${esc(n.note || '')}</textarea></td></tr>
-  ${open ? `<tr class="drow"><td colspan="13">${detail(r)}</td></tr>` : ''}`;
+  ${open ? `<tr class="drow"><td colspan="${wk().all ? 14 : 13}">${detail(r)}</td></tr>` : ''}`;
 }
 const KT = { ok: 'ตรง', pendingLine: 'รอใบอนุมัติ', diff: 'ไม่ตรง', sameTotal: 'ยอดตรง แยกต่าง', codeDiff: 'รหัสไม่ตรง', extra: 'ไม่มีในใบอนุมัติ', missing: 'ไม่ได้เรียกเก็บ' };
 function detail(r) {
@@ -710,7 +746,7 @@ function quotes() {
 
 function render() {
   renderChrome();
-  const f = { overview, bills, issues, unused, quotes }[S.page];
+  const f = { overview, bills, issues, unused, quotes, share }[S.page];
   const focus = document.activeElement?.id;
   $('#page').innerHTML = f();
   const q = $('#q'); if (q) { q.oninput = (e) => { S.q = e.target.value; const pos = e.target.selectionStart; render(); const n = $('#q'); n.focus(); n.setSelectionRange(pos, pos); }; if (focus === 'q') q.focus(); }
@@ -719,9 +755,11 @@ function render() {
 }
 $('#page').addEventListener('click', (e) => {
   const st = e.target.closest('[data-st]'); if (st) { S.status = st.dataset.st; render(); return; }
-  const cl = e.target.closest('[data-clear]'); if (cl) { const k = cl.dataset.clear; if (k === 'status') S.status = 'all'; if (k === 'q') S.q = ''; if (k === 'unrev') S.unrev = false; render(); return; }
+  const cl = e.target.closest('[data-clear]'); if (cl) { const k = cl.dataset.clear; if (k === 'status') S.status = 'all'; if (k === 'q') { S.q = ''; $('#plateQ').value = ''; } if (k === 'unrev') S.unrev = false; render(); return; }
   const z = e.target.closest('[data-zoom]'); if (z) { const [rec, i] = z.dataset.zoom.split('|'); const r = V(wk()).results.find((x) => x.receiptNo === rec); zoom(r.quotes.flatMap((q) => window.SCANS[q.id] || [])[+i]); return; }
   const zq = e.target.closest('[data-zoomq]'); if (zq) { zoom(...(window.SCANS[zq.dataset.zoomq] || [])); return; }
+  if (e.target.closest('[data-allq]')) { e.preventDefault(); S.wi = -1; render(); return; }
+  const br = e.target.closest('[data-branch]'); if (br) { S.page = 'bills'; S.status = 'all'; S.q = br.dataset.branch; render(); scrollTo(0, 0); return; }
   const g = e.target.closest('[data-goto]'); if (g) { const gr = V(wk()).results.find((x) => x.receiptNo === g.dataset.goto); S.page = 'bills'; S.status = 'all'; S.q = gr?.noReceipt ? gr.plate : g.dataset.goto; S.open.add(g.dataset.goto); render(); scrollTo(0, 0); return; }
   if (e.target.closest('input,textarea,button,a')) return;
   const tr = e.target.closest('[data-open]'); if (tr) { const k = tr.dataset.open; S.open.has(k) ? S.open.delete(k) : S.open.add(k); render(); }
@@ -734,7 +772,7 @@ $('#modal').onclick = (e) => { if (e.target.id === 'modal' || e.target.closest('
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#modal').classList.remove('on'); });
 
 /* B-Quik list: bills ticked to send (default: not passing and no approval) */
-function bqOn(w, r) { const n = notesFor(w)[r.receiptNo] || {}; return n.sendBQ ?? (r.status === 'fail' || r.status === 'noapproval'); }
+function bqOn(w, r) { const n = billNote(r); return n.sendBQ ?? (r.status === 'fail' || r.status === 'noapproval'); }
 const bqAll = () => W.flatMap((w) => V(w).results.filter((r) => r.status !== 'void' && bqOn(w, r)).map((r) => ({ w, r })));
 function bqCount() { $('#bqn').textContent = `(${bqAll().length})`; }
 $('#bqx').onclick = () => {
@@ -744,7 +782,7 @@ $('#bqx').onclick = () => {
   const m = W.at(-1).out.meta, wb = XLSX.utils.book_new();
   const top = [['รายการวางบิลที่ไม่ตรงกับใบอนุมัติซ่อม — ขอให้ บี-ควิก ตรวจสอบและชี้แจง'], [`ลูกค้า: ${m.customerNo} ${m.customerName}    ช่วงวางบิล: ${BC.dstr(W[0].out.meta.from)} – ${BC.dstr(m.to)}    วันที่ส่ง: ${BC.dstr(new Date())}`], ['บี-ควิก กรุณากรอก 3 คอลัมน์ท้าย: คำชี้แจง / ผลการตรวจสอบ (ถูกต้อง, แก้ไขบิล, ออกใบลดหนี้) / ยอดที่ขอปรับ'], []];
   const head = ['ลำดับ', 'งวด', 'วันที่รับบริการ', 'สาขา', 'ทะเบียน', 'เลขที่ใบเสร็จ', 'ยอดบิล (บาท)', 'เลขที่ใบเสนอราคา', 'ยอดอนุมัติ (บาท)', 'ส่วนต่าง (บาท)', 'ประเภท', 'รายละเอียดที่พบ', 'หมายเหตุจากลูกค้า', 'คำชี้แจงจาก บี-ควิก', 'ผลการตรวจสอบ', 'ยอดที่ขอปรับ (บาท)'];
-  const body = list.map(({ w, r }, i) => { const n = ((w.id === wk().id ? NOTES : ls.get('nx.notes.' + w.id)) || {})[r.receiptNo] || {};
+  const body = list.map(({ w, r }, i) => { const n = billNote(r);
     return [i + 1, w.label, r.dateStr, r.branch, r.plate, shownNo(r), r.total, r.quoteNos || '—', r.quotes.length ? r.quoteTotal : '', r.quotes.length ? BC.r2(r.total - r.quoteTotal) : r.total, ST[r.status][0],
       r.issues.filter((x) => x.sev !== 'info').map((x) => `${x.type}${x.line ? ' — ' + x.line : ''}: ${x.msg}`).join('\n'), n.note || '', '', '', '']; });
   const tot = ['', '', '', '', '', 'รวม', BC.r2(body.reduce((a, x) => a + x[6], 0)), '', BC.r2(body.reduce((a, x) => a + (+x[8] || 0), 0)), BC.r2(body.reduce((a, x) => a + x[9], 0))];
@@ -765,7 +803,7 @@ $('#bqx').onclick = () => {
 /* PDF: one page set per vehicle visit, printed through the browser (Save as PDF) */
 const KTP = { ok: 'ตรง', diff: 'ไม่ตรง', sameTotal: 'ยอดตรง แยกต่าง', codeDiff: 'รหัสสินค้าไม่ตรง', extra: 'ไม่มีในใบอนุมัติ', missing: 'อนุมัติแต่ไม่ได้เรียกเก็บ', pendingLine: 'รอใบอนุมัติ' };
 function pdfPage(w, r) {
-  const m = w.out.meta, n = notesFor(w)[r.receiptNo] || {}, verdict = ST[r.origStatus || r.status][0];
+  const m = w.out.meta, n = billNote(r), verdict = ST[r.origStatus || r.status][0];
   const iss = r.issues.filter((i) => i.sev !== 'info');
   const lines = r.lines.filter((l) => (l.bill?.total || 0) || (l.quote?.amount || 0) || ['diff', 'codeDiff', 'sameTotal'].includes(l.kind));
   const imgs = r.quotes.flatMap((q) => window.SCANS[q.id] || []);
@@ -801,7 +839,178 @@ function printBills(list, name) {
 }
 $('#bqpdf').onclick = () => printBills(bqAll().sort((a, b) => a.r.date - b.r.date), `NIMEX-BQuik-${BC.dstr(new Date()).split('/').reverse().join('')}-${bqAll().length}bills`);
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-pdf]'); if (!b) return; const r = V(wk()).results.find((x) => x.receiptNo === b.dataset.pdf);
-  printBills([{ w: wk(), r }], `NIMEX-BQuik-${r.plate}-${r.noReceipt ? r.dateStr.replace(/\//g, '') : r.receiptNo}`); });
+  printBills([{ w: wkOf(r), r }], `NIMEX-BQuik-${r.plate}-${r.noReceipt ? r.dateStr.replace(/\//g, '') : r.receiptNo}`); });
+
+/* ---------- summary / share (selected period drives everything) ---------- */
+const SEC = [['kpi', 'KPI หลัก', true], ['weeks', 'แยกรายงวด', true], ['branch', 'แยกตามสาขา', true], ['act', 'บิลที่ต้องจัดการ', true], ['bwRate', 'ดีสุด/แย่สุด: อัตราผ่านรายสาขา', false], ['bwRisk', 'ดีสุด/แย่สุด: ยอดเสี่ยงรายสาขา', false]];
+const SHS = Object.fromEntries(SEC.map(([k, , d]) => [k, d]));
+const GOOD = '#1a7f37', BAD = '#c62828', NEU = '#7a879c';
+const SC = { pass: ['ผ่าน', '#1d5fd1'], check: ['ต้องตรวจ', '#c9a227'], verify: ['รอยืนยันจากภาพ', '#7b6fb0'], fail: ['ไม่ผ่าน', '#c62828'], noapproval: ['ไม่มีใบอนุมัติ', '#8a1616'], pending: ['รอใบอนุมัติ', '#9aa8bf'] };
+const grp = (st) => (['pass', 'pass-note', 'reviewed'].includes(st) ? 'pass' : st);
+const ymd = (d) => BC.dstr(d).split('/').reverse().join('');
+function agg() {
+  const w = wk(), o = V(w), s = o.summary, pw = prev(), ps = pw ? V(pw).summary : null;
+  const weeks = weekRows().filter((x) => w.all || x.i <= S.wi);
+  const rk = { noapproval: 0, fail: 1, check: 2, verify: 3 };
+  const act = o.results.filter((r) => rk[r.status] != null).sort((a, b) => rk[a.status] - rk[b.status] || b.total - a.total);
+  const rate = s.bills ? s.pass / s.bills : 0, prate = ps && ps.bills ? ps.pass / ps.bills : null;
+  const kpis = [
+    { k: 'billTotal', l: 'ยอดวางบิลสุทธิ', v: s.billTotal, p: ps?.billTotal, f: 'money', good: null, sub: `${s.bills} บิล` },
+    { k: 'pass', l: 'ผ่าน', v: s.pass, p: ps?.pass, f: 'n', good: 'up', sub: `อัตราผ่าน ${Math.round(rate * 100)}%` },
+    { k: 'rate', l: 'อัตราผ่าน', v: rate, p: prate, f: 'pct', good: 'up', sub: 'ผ่าน ÷ บิลทั้งหมด', hideInfo: true },
+    { k: 'check', l: 'ต้องตรวจ', v: s.check, p: ps?.check, f: 'n', good: 'down', sub: 'ยอดตรง มีจุดต้องดู' },
+    { k: 'fail', l: 'ไม่ผ่าน', v: s.fail, p: ps?.fail, f: 'n', good: 'down', sub: 'ยอด/รายการไม่ตรง' },
+    { k: 'noapproval', l: 'ไม่มีใบอนุมัติ', v: s.noapproval, p: ps?.noapproval, f: 'n', good: 'down', sub: 'วางบิลโดยไม่มีใบเซ็น' },
+    { k: 'atRisk', l: 'ยอดเสี่ยง', v: s.atRisk, p: ps?.atRisk, f: 'money', good: 'down', sub: 'บาท ไม่ผ่าน + ไม่มีใบอนุมัติ' }];
+  return { w, o, s, pw, ps, weeks, branches: branchAgg(o), act, kpis, period: w.all ? `ทุกงวด ${periodTxt(w)}` : `งวด ${w.label} (${periodTxt(w)})` };
+}
+const kfmt = (x, f) => (f === 'money' ? fmt(x) : f === 'pct' ? Math.round(x * 100) + '%' : String(x));
+function kdelta(k) { // → [text, colour]
+  if (k.p == null) return ['ไม่มีช่วงก่อนหน้า', NEU];
+  const d = k.f === 'pct' ? Math.round((k.v - k.p) * 1000) / 10 : BC.r2(k.v - k.p);
+  if (!d) return ['เท่างวดก่อน', NEU];
+  const txt = `${d > 0 ? '▲' : '▼'} ${k.f === 'money' ? fmt(Math.abs(d)) : k.f === 'pct' ? Math.abs(d) + ' จุด' : Math.abs(d)} จากงวดก่อน`;
+  return [txt, !k.good ? NEU : (k.good === 'up') === d > 0 ? GOOD : BAD];
+}
+function bestWorst(list, key, higherBetter) {
+  const L = list.filter((a) => a.bills >= 2); // a rate on one bill swings 0↔100%
+  const n = L.length >= 10 ? 5 : Math.floor(L.length / 2);
+  const all = [...L].sort((a, b) => (higherBetter ? b[key] - a[key] : a[key] - b[key]) || b.bills - a.bills);
+  return { best: all.slice(0, n), worst: all.slice(all.length - n).reverse(), all, n };
+}
+
+/* infographic 16:9 — pure SVG with Prompt embedded, then canvas → PNG */
+let FONTCSS = null;
+const fontCss = () => FONTCSS ?? (FONTCSS = ([...document.querySelectorAll('style')].map((x) => x.textContent).join('\n').match(/@font-face\{[^}]*\}/g) || []).join('\n'));
+const cut = (t, n) => (String(t).length > n ? String(t).slice(0, n - 1) + '…' : String(t));
+function infoSVG(a, embed) {
+  const X = (x, y, t, sz, wt, fill, anc = 'start') => `<text x="${x}" y="${y}" font-size="${sz}" font-weight="${wt}" fill="${fill}" text-anchor="${anc}">${esc(t)}</text>`;
+  const card = (x, y, w, h, title, sub) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="16" fill="#fff"/><rect x="${x}" y="${y}" width="${w}" height="5" rx="2" fill="#c9a227"/>${X(x + 26, y + 46, title, 26, 600, '#0b2545')}${sub ? X(x + w - 26, y + 46, sub, 17, 400, '#5d6b82', 'end') : ''}`;
+  let g = '';
+  // header
+  g += `<rect width="1920" height="120" fill="#0b2545"/><rect x="48" y="30" width="150" height="60" rx="12" fill="#fff"/>${X(123, 72, 'NIMEX', 32, 600, '#0b2545', 'middle')}`;
+  g += X(226, 70, 'สรุปตรวจการวางบิลซ่อมบำรุง เทียบใบอนุมัติ B-Quik', 36, 600, '#fff') + X(226, 102, `${a.o.meta.customerName} · ${a.o.meta.customerNo}`, 20, 400, '#c9d5ea');
+  g += X(1872, 66, a.period, 26, 500, '#e6c45a', 'end') + X(1872, 100, a.pw ? `เทียบกับงวด ${a.pw.label}` : 'ไม่มีช่วงก่อนหน้า', 19, 400, '#c9d5ea', 'end');
+  // KPI cards
+  const ks = a.kpis.filter((k) => !k.hideInfo), cw = (1920 - 96 - (ks.length - 1) * 20) / ks.length, bars = { billTotal: '#9aa8bf', pass: '#1d5fd1', check: '#c9a227', fail: '#c62828', noapproval: '#8a1616', atRisk: '#c62828' };
+  ks.forEach((k, i) => { const x = 48 + i * (cw + 20), y = 148, [dt, dc] = kdelta(k);
+    g += `<rect x="${x}" y="${y}" width="${cw}" height="176" rx="16" fill="url(#kg)"/><rect x="${x}" y="${y + 170}" width="${cw}" height="6" fill="${bars[k.k]}"/>`;
+    g += X(x + 22, y + 38, k.l, 20, 500, '#e6c45a') + X(x + 22, y + 92, kfmt(k.v, k.f), k.f === 'money' ? 40 : 50, 600, '#fff') + X(x + 22, y + 124, k.sub, 16, 400, '#c3d0e6');
+    g += `<rect x="${x + 16}" y="${y + 134}" width="${cw - 32}" height="28" rx="8" fill="#ffffff" fill-opacity=".1"/>` + X(x + 26, y + 154, dt, 16, 500, dc === GOOD ? '#7ee2a0' : dc === BAD ? '#ff9d9d' : '#aab8cf'); });
+  const CW = 900, CH = 318, cx = [48, 972], cy = [352, 694];
+  // (1) amount by result
+  { const x = cx[0], y = cy[0]; g += card(x, y, CW, CH, 'ยอดวางบิลตามผลตรวจ', 'ความยาวตามยอดเงิน');
+    const live = a.o.results.filter((r) => r.status !== 'void'), rows = Object.keys(SC).map((k) => { const rs = live.filter((r) => grp(r.status) === k); return { k, n: rs.length, amt: rs.reduce((s, r) => s + r.total, 0) }; }).filter((r) => r.n);
+    const mx = Math.max(1, ...rows.map((r) => r.amt)), bh = Math.min(40, (CH - 90) / rows.length - 10);
+    rows.forEach((r, i) => { const yy = y + 76 + i * (bh + 10), bw = Math.max(4, (r.amt / mx) * 470);
+      g += X(x + 26, yy + bh / 2 + 7, SC[r.k][0], 19, 500, '#14213d') + `<rect x="${x + 200}" y="${yy}" width="${bw}" height="${bh}" rx="6" fill="${SC[r.k][1]}"/>` + X(x + 210 + bw, yy + bh / 2 + 7, `${fmt(r.amt)} บาท · ${r.n} บิล`, 18, 500, '#14213d'); }); }
+  // (2) trend by period
+  { const x = cx[1], y = cy[0], ws = a.weeks; g += card(x, y, CW, CH, 'แนวโน้มรายงวด', 'ยอดวางบิล แยกตามผลตรวจ');
+    const mx = Math.max(1, ...ws.map((r) => r.s.billTotal)), slot = (CW - 60) / ws.length, bw = Math.min(70, slot * 0.6), base = y + CH - 50, hmax = CH - 140;
+    ws.forEach(({ w, i, s }, j) => { const rs = V(w).results.filter((r) => r.status !== 'void'), part = (ks) => rs.filter((r) => ks.includes(grp(r.status))).reduce((t, r) => t + r.total, 0);
+      let yy = base; const bx = x + 30 + j * slot + (slot - bw) / 2;
+      [['pass', '#1d5fd1'], ['check', '#c9a227'], ['verify', '#7b6fb0'], ['fail', '#c62828'], ['noapproval', '#8a1616'], ['pending', '#9aa8bf']].forEach(([k, c]) => { const h = (part([k]) / mx) * hmax; if (h > 0) { yy -= h; g += `<rect x="${bx}" y="${yy}" width="${bw}" height="${h}" fill="${c}"/>`; } });
+      if (i === S.wi) g += `<rect x="${bx - 4}" y="${yy - 4}" width="${bw + 8}" height="${base - yy + 8}" fill="none" stroke="#c9a227" stroke-width="3" rx="4"/>`;
+      g += X(bx + bw / 2, yy - 10, Math.round(s.billTotal / 1000) + 'k', 15, 500, '#14213d', 'middle') + X(bx + bw / 2, base + 26, w.label, 14, 400, '#5d6b82', 'middle'); }); }
+  // (3) top branches by amount, risk part in red
+  { const x = cx[0], y = cy[1]; g += card(x, y, CW, CH, 'สาขายอดวางบิลสูงสุด 6 อันดับ', 'สีแดง = ยอดเสี่ยง');
+    const bs = [...a.branches].sort((p, q) => q.total - p.total).slice(0, 6), mx = Math.max(1, ...bs.map((b) => b.total)), bh = 30;
+    bs.forEach((b, i) => { const yy = y + 74 + i * (bh + 9), bw = Math.max(4, (b.total / mx) * 400), rw = (b.atRisk / mx) * 400;
+      g += X(x + 26, yy + 21, cut(b.branch, 22), 18, 500, '#14213d') + `<rect x="${x + 290}" y="${yy}" width="${bw}" height="${bh}" rx="5" fill="#c9d6ea"/>` + (rw ? `<rect x="${x + 290}" y="${yy}" width="${rw}" height="${bh}" rx="5" fill="#c62828"/>` : '');
+      g += X(x + 300 + bw, yy + 21, `${fmt(b.total)} · ${b.bills} บิล${b.atRisk ? ` · เสี่ยง ${fmt(b.atRisk)}` : ''}`, 16, 500, '#14213d'); }); }
+  // (4) donut by count + top-3 risk bills
+  { const x = cx[1], y = cy[1]; g += card(x, y, CW, CH, 'สัดส่วนบิลตามผลตรวจ', 'นับจำนวนบิล');
+    const live = a.o.results.filter((r) => r.status !== 'void'), rows = Object.keys(SC).map((k) => ({ k, n: live.filter((r) => grp(r.status) === k).length })).filter((r) => r.n), tot = live.length || 1;
+    const ox = x + 150, oy = y + 190, R = 100, r0 = 62; let ang = -Math.PI / 2;
+    rows.forEach(({ k, n }) => { const a1 = ang + (n / tot) * Math.PI * 2 - (rows.length > 1 ? 0.0001 : 0.0002), big = a1 - ang > Math.PI ? 1 : 0, P = (rr, t) => `${ox + rr * Math.cos(t)} ${oy + rr * Math.sin(t)}`;
+      g += `<path d="M${P(R, ang)} A${R} ${R} 0 ${big} 1 ${P(R, a1)} L${P(r0, a1)} A${r0} ${r0} 0 ${big} 0 ${P(r0, ang)}Z" fill="${SC[k][1]}"/>`; ang += (n / tot) * Math.PI * 2; });
+    g += X(ox, oy + 4, live.length, 34, 600, '#0b2545', 'middle') + X(ox, oy + 30, 'บิล', 16, 400, '#5d6b82', 'middle');
+    rows.forEach(({ k, n }, i) => { g += `<rect x="${x + 290}" y="${y + 78 + i * 30}" width="16" height="16" rx="3" fill="${SC[k][1]}"/>` + X(x + 314, y + 92 + i * 30, `${SC[k][0]} ${n} (${Math.round((n / tot) * 100)}%)`, 17, 400, '#14213d'); });
+    const top = a.act.filter((r) => r.status === 'fail' || r.status === 'noapproval').sort((p, q) => q.total - p.total).slice(0, 3);
+    g += X(x + 560, y + 92, 'ยอดเสี่ยงสูงสุด 3 บิล', 18, 600, '#0b2545');
+    if (!top.length) g += X(x + 560, y + 130, 'ไม่มีบิลเสี่ยง', 17, 400, '#5d6b82');
+    top.forEach((r, i) => { const yy = y + 128 + i * 58; g += X(x + 560, yy, `${i + 1}. ${r.plate}`, 19, 600, '#14213d') + X(x + 874, yy, fmt(r.total), 19, 600, '#c62828', 'end') + X(x + 580, yy + 24, cut(`${ST[r.status][0]} · ${wkOf(r).label}`, 30), 15, 400, '#5d6b82'); }); }
+  // footer
+  g += X(48, 1052, 'ผ่าน = ยอดเงินและทุกบรรทัดตรงกับใบอนุมัติ (รวมบิลที่ทำเครื่องหมายตรวจแล้ว) · ยอดเสี่ยง = ยอดของบิลไม่ผ่าน + ไม่มีใบอนุมัติ · ผลต่าง: เขียว = ดีขึ้น แดง = แย่ลง', 17, 400, '#5d6b82');
+  g += X(1872, 1052, `สร้างเมื่อ ${BC.dstr(new Date())}`, 17, 400, '#5d6b82', 'end');
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080" font-family="Prompt, sans-serif"><defs>${embed ? `<style>${fontCss()}</style>` : ''}<linearGradient id="kg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d4477"/><stop offset=".7" stop-color="#0b2545"/></linearGradient></defs><rect width="1920" height="1080" fill="#f3f5f9"/>${g}</svg>`;
+}
+async function svgPng(svg, w, h, scale = 2) {
+  const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  await img.decode(); await new Promise((r) => setTimeout(r, 80));
+  const c = document.createElement('canvas'); c.width = w * scale; c.height = h * scale; c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/png');
+}
+function dl(href, name) { const l = document.createElement('a'); l.href = href; l.download = name; document.body.appendChild(l); l.click(); l.remove(); }
+const fileTag = (a) => (a.w.all ? `all-${ymd(a.w.out.meta.from)}-${ymd(a.w.out.meta.to)}` : `${ymd(a.w.out.meta.from)}-${ymd(a.w.out.meta.to)}`);
+
+/* section tables shared by Excel and PowerPoint */
+function secTables(a) {
+  const T = [];
+  if (SHS.kpi) T.push({ name: 'KPI หลัก', head: ['ตัวชี้วัด', 'ค่า', 'งวดก่อนหน้า', 'ผลต่าง'], rows: a.kpis.map((k) => [k.l, k.f === 'pct' ? Math.round(k.v * 1000) / 10 + '%' : k.v, k.p == null ? 'ไม่มีช่วงก่อนหน้า' : k.f === 'pct' ? Math.round(k.p * 1000) / 10 + '%' : k.p, kdelta(k)[0]]), widths: [22, 16, 18, 26] });
+  if (SHS.weeks) T.push({ name: 'แยกรายงวด', head: ['งวด', 'บิล', 'ยอดวางบิล', 'ผ่าน', 'ต้องตรวจ', 'ไม่ผ่าน', 'ไม่มีใบอนุมัติ', 'ยอดเสี่ยง', 'อัตราผ่าน'], rows: a.weeks.map(({ w, s }) => [w.label, s.bills, s.billTotal, s.pass, s.check, s.fail, s.noapproval, s.atRisk, s.bills ? Math.round((s.pass / s.bills) * 100) + '%' : '0%']), widths: [16, 7, 13, 7, 9, 8, 12, 12, 10] });
+  if (SHS.branch) T.push({ name: 'แยกตามสาขา', head: ['สาขา', 'บิล', 'ยอดวางบิล', 'ผ่าน', 'ต้องตรวจ', 'ไม่ผ่าน', 'ไม่มีใบอนุมัติ', 'ยอดเสี่ยง', 'อัตราผ่าน'], rows: a.branches.map((b) => [b.branch, b.bills, b.total, b.pass, b.check, b.fail, b.noapproval, b.atRisk, Math.round(b.rate * 100) + '%']), widths: [26, 7, 13, 7, 9, 8, 12, 12, 10] });
+  if (SHS.act) T.push({ name: 'บิลที่ต้องจัดการ', head: ['สถานะ', 'งวด', 'ทะเบียน', 'เลขที่ใบเสร็จ', 'สาขา', 'ยอดบิล', 'ยอดอนุมัติ', 'ส่วนต่าง', 'จุดหลัก', 'หมายเหตุ'], rows: a.act.map((r) => { const i = r.issues.find((x) => x.sev === 'error') || r.issues.find((x) => x.sev === 'warn'); return [ST[r.status][0], wkOf(r).label, r.plate, shownNo(r), r.branch, r.total, r.quotes.length ? r.quoteTotal : '', r.quotes.length ? BC.r2(r.total - r.quoteTotal) : r.total, i ? `${i.type}: ${i.msg}` : '', billNote(r).note || '']; }), widths: [14, 14, 11, 17, 20, 11, 11, 10, 60, 30] });
+  const bw = (key, hb, title, val) => { const x = bestWorst(a.branches, key, hb), bset = new Set(x.best), wset = new Set(x.worst);
+    T.push({ name: title, head: ['อันดับ', 'สาขา', 'บิล', title.includes('อัตรา') ? 'อัตราผ่าน' : 'ยอดเสี่ยง', 'ป้าย'], rows: x.all.map((b, i) => [i + 1, b.branch, b.bills, val(b), bset.has(b) ? 'ดีสุด' : wset.has(b) ? 'แย่สุด' : '']), widths: [8, 26, 7, 14, 9], bw: x }); };
+  if (SHS.bwRate) bw('rate', true, 'ดีสุดแย่สุด อัตราผ่าน', (b) => Math.round(b.rate * 100) + '%');
+  if (SHS.bwRisk) bw('atRisk', false, 'ดีสุดแย่สุด ยอดเสี่ยง', (b) => b.atRisk);
+  return T;
+}
+function shareXlsx() {
+  if (!window.XLSX) { toast('โหลดตัวสร้าง Excel ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต'); return; }
+  const a = agg(), T = secTables(a); if (!T.length) { toast('ยังไม่ได้เลือกหัวข้อ'); return; }
+  const wb = XLSX.utils.book_new();
+  T.forEach((t) => { const ws = XLSX.utils.aoa_to_sheet([[`NIMEX ตรวจวางบิล B-Quik — ${t.name}`], [`${a.o.meta.customerNo} ${a.o.meta.customerName} · ${a.period}`], [], t.head, ...t.rows]);
+    ws['!cols'] = t.widths.map((x) => ({ wch: x })); ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 3, c: 0 }, e: { r: 3 + t.rows.length, c: t.head.length - 1 } }) };
+    XLSX.utils.book_append_sheet(wb, ws, t.name.slice(0, 31)); });
+  XLSX.writeFile(wb, `NIMEX-BillCheck-Summary-${fileTag(a)}.xlsx`); toast(`ส่งออก Excel ${T.length} ชีต`);
+}
+async function sharePng() { const a = agg(); toast('กำลังสร้างภาพ…'); dl(await svgPng(infoSVG(a, true), 1920, 1080, 2), `NIMEX-BillCheck-Infographic-${fileTag(a)}.png`); toast('ได้ภาพ 3840×2160 แล้ว'); }
+const PPTX_URL = window.__PPTX_URL || 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
+const loadPptx = () => (window.PptxGenJS ? Promise.resolve() : new Promise((ok, no) => { const s = document.createElement('script'); s.src = PPTX_URL; s.onload = ok; s.onerror = () => no(new Error('load')); document.head.appendChild(s); }));
+async function sharePptx() {
+  const a = agg(); toast('กำลังสร้าง PowerPoint…');
+  try { await loadPptx(); } catch { toast('โหลดตัวสร้าง PowerPoint ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต'); return; }
+  const P = new window.PptxGenJS(); P.layout = 'LAYOUT_WIDE'; const F = 'Tahoma';
+  P.addSlide().addImage({ data: await svgPng(infoSVG(a, true), 1920, 1080, 1), x: 0, y: 0, w: 13.333, h: 7.5 });
+  secTables(a).forEach((t) => { const per = 14;
+    for (let i = 0; i < Math.max(1, t.rows.length); i += per) { const sl = P.addSlide(); sl.background = { color: 'F3F5F9' };
+      sl.addShape(P.ShapeType.rect, { x: 0, y: 0, w: 13.333, h: 0.8, fill: { color: '0B2545' } });
+      sl.addText(`${t.name}${t.rows.length > per ? ` (${i / per + 1}/${Math.ceil(t.rows.length / per)})` : ''}`, { x: 0.4, y: 0.12, w: 8.5, h: 0.56, fontFace: F, fontSize: 22, bold: true, color: 'FFFFFF' });
+      sl.addText(a.period, { x: 8.6, y: 0.12, w: 4.35, h: 0.56, fontFace: F, fontSize: 13, color: 'E6C45A', align: 'right' });
+      const rows = t.rows.slice(i, i + per).map((r) => r.map((c, j) => ({ text: typeof c === 'number' ? (/ยอด|ส่วนต่าง/.test(t.head[j]) ? fmt(c) : c.toLocaleString('en-US')) : String(c ?? ''), options: { align: typeof c === 'number' ? 'right' : 'left', color: c === 'แย่สุด' ? 'C62828' : c === 'ดีสุด' ? '1A7F37' : '14213D' } })));
+      const tw = t.widths.reduce((s, x) => s + x, 0);
+      sl.addTable([t.head.map((h) => ({ text: h, options: { bold: true, color: 'FFFFFF', fill: { color: '13315C' } } })), ...rows], { x: 0.4, y: 1.05, w: 12.53, colW: t.widths.map((x) => (x / tw) * 12.53), fontFace: F, fontSize: t.head.length > 8 ? 10 : 12, border: { type: 'solid', color: 'DDE3EC', pt: 0.75 }, fill: { color: 'FFFFFF' }, autoPage: false, rowH: 0.36 }); } });
+  await P.writeFile({ fileName: `NIMEX-BillCheck-${fileTag(a)}.pptx` }); toast('ส่งออก PowerPoint แล้ว');
+}
+const NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+function shareText(a) {
+  const L = [`📊 NIMEX ตรวจวางบิล B-Quik`, `🗓️ ${a.period}`, `🏢 ${a.o.meta.customerName}`, ''];
+  const kd = (k) => (k.p == null ? '' : ` (${kdelta(k)[0]})`), K = Object.fromEntries(a.kpis.map((k) => [k.k, k]));
+  if (SHS.kpi) L.push(`💰 ยอดวางบิล ${fmt(a.s.billTotal)} บาท · ${a.s.bills} บิล`, `✅ ผ่าน ${a.s.pass} บิล (${kfmt(K.rate.v, 'pct')})${kd(K.pass)}`, `⚠️ ต้องตรวจ ${a.s.check}${kd(K.check)}`, `❌ ไม่ผ่าน ${a.s.fail}${kd(K.fail)}`, `🚫 ไม่มีใบอนุมัติ ${a.s.noapproval}${kd(K.noapproval)}`, `🔴 ยอดเสี่ยง ${fmt(a.s.atRisk)} บาท${kd(K.atRisk)}`, '');
+  if (SHS.weeks) { L.push('📅 แยกรายงวด'); a.weeks.forEach(({ w, s }, i) => L.push(`${NUM[i] || '▪️'} ${w.label}: ${fmt(s.billTotal)} บาท · ผ่าน ${s.pass}/${s.bills}${s.atRisk ? ` · เสี่ยง ${fmt(s.atRisk)}` : ''}`)); L.push(''); }
+  if (SHS.act) { L.push(`🔧 บิลที่ต้องจัดการ ${a.act.length} บิล`); a.act.slice(0, 10).forEach((r, i) => { const x = r.issues.find((q) => q.sev === 'error') || r.issues.find((q) => q.sev === 'warn'); L.push(`${NUM[i]} ${r.plate} · ${ST[r.status][0]} · ${fmt(r.total)}${x ? ` · ${x.type}` : ''}`); }); if (a.act.length > 10) L.push(`… และอีก ${a.act.length - 10} บิล`); L.push(''); }
+  if (SHS.branch) { const rb = a.branches.filter((b) => b.atRisk > 0).slice(0, 5); L.push('🏪 สาขาที่มียอดเสี่ยง'); if (!rb.length) L.push('ไม่มี'); rb.forEach((b, i) => L.push(`${NUM[i]} ${b.branch}: เสี่ยง ${fmt(b.atRisk)} บาท (${b.fail + b.noapproval}/${b.bills} บิล)`)); L.push(''); }
+  const bwt = (key, hb, title, val) => { const x = bestWorst(a.branches, key, hb); if (!x.n) return; L.push(`🏆 ${title} — ดีสุด`); x.best.forEach((b, i) => L.push(`${NUM[i]} ${b.branch} ${val(b)}`)); L.push(`👎 ${title} — แย่สุด`); x.worst.forEach((b, i) => L.push(`${NUM[i]} ${b.branch} ${val(b)}`)); L.push(''); };
+  if (SHS.bwRate) bwt('rate', true, 'อัตราผ่านรายสาขา', (b) => `${Math.round(b.rate * 100)}% (${b.bills} บิล)`);
+  if (SHS.bwRisk) bwt('atRisk', false, 'ยอดเสี่ยงรายสาขา', (b) => `${fmt(b.atRisk)} บาท`);
+  return L.join('\n').trim();
+}
+function share() {
+  const a = agg();
+  return `<div class="pills"><span class="pill-h">ส่งออกตามงวดที่เลือก <b>${esc(a.period)}</b></span><span class="pill-h">${a.pw ? `เทียบกับ <b>${esc(a.pw.label)}</b>` : 'ไม่มีช่วงก่อนหน้า (เลือกงวดเดียวด้านบนเพื่อเทียบ)'}</span></div>
+  <div class="card"><h3>เลือกหัวข้อที่จะส่งออก</h3><p class="sub">ใช้กับ Excel, PowerPoint และข้อความสรุป · อินโฟกราฟิกใช้งวดที่เลือกอยู่ ไม่ต้องติ๊ก</p>
+   <div class="filters">${SEC.map(([k, t]) => `<label class="tg"><input type="checkbox" data-sec="${k}" ${SHS[k] ? 'checked' : ''}> ${esc(t)}</label>`).join('')}</div>
+   <div class="filters"><button class="btn gold" data-sh="xls">Excel</button><button class="btn" data-sh="ppt">PowerPoint 16:9</button><button class="btn" data-sh="png">อินโฟกราฟิก 16:9 (PNG)</button><button class="btn" data-sh="txt">คัดลอกข้อความสรุป</button></div></div>
+  <div class="card"><h3>ตัวอย่างอินโฟกราฟิก 16:9</h3><div style="border-radius:10px;overflow:hidden;border:1px solid var(--rule)">${infoSVG(a, false).replace('width="1920" height="1080"', 'width="100%" style="display:block;height:auto"')}</div></div>
+  <div class="card"><h3>ข้อความสรุป (สำหรับ LINE / อีเมล)</h3><textarea id="sumTxt" readonly rows="16" style="width:100%;border:1px solid var(--rule);border-radius:8px;padding:10px;background:var(--card);font-size:14px">${esc(shareText(a))}</textarea></div>`;
+}
+$('#page').addEventListener('change', (e) => { const c = e.target.closest('[data-sec]'); if (c) { SHS[c.dataset.sec] = c.checked; const t = $('#sumTxt'); if (t) t.value = shareText(agg()); } });
+$('#page').addEventListener('click', async (e) => { const b = e.target.closest('[data-sh]'); if (!b) return; const k = b.dataset.sh;
+  try { if (k === 'xls') shareXlsx(); if (k === 'png') await sharePng(); if (k === 'ppt') await sharePptx();
+    if (k === 'txt') { const t = shareText(agg()); try { await navigator.clipboard.writeText(t); toast('คัดลอกข้อความแล้ว'); } catch { const el = $('#sumTxt'); el.select(); document.execCommand('copy'); toast('คัดลอกข้อความแล้ว'); } } }
+  catch (err) { toast('ส่งออกไม่สำเร็จ: ' + err.message); } });
 
 /* Excel */
 $('#xls').onclick = () => {
